@@ -22,3 +22,8 @@ using namespace std;
 #define INVALID_SOCKET  (SOCKET)(~0)
 #define SOCKET_ERROR            (-1)
 #endif
+//缓冲区最小单元大小
+#ifndef RECV_BUFF_SZIE
+#define RECV_BUFF_SZIE 10240*5
+#define SEND_BUFF_SZIE RECV_BUFF_SZIE
+#endif // !RECV_BUFF_SZIE
