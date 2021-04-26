@@ -20,9 +20,48 @@ void cmdThread()
 	}
 }
 
+class MyServer : public TcpServer
+{
+public:
+
+	virtual void OnNetJoin(ClientSocket* pClient)
+	{
+		TcpServer::OnNetJoin(pClient);
+	}
+	virtual void OnNetLeave(ClientSocket* pClient)
+	{
+		TcpServer::OnNetLeave(pClient);
+	}
+	virtual void OnNetMsg(CellServer* pCellServer, ClientSocket* pClient, DataHeader* header)
+	{
+		TcpServer::OnNetMsg(pCellServer, pClient, header);
+		switch (header->cmd)
+		{
+		case CMD_LOGIN:
+		{
+			Login* login = (Login*)header;
+			LoginResult* ret = new LoginResult();
+			pCellServer->addSendTask(pClient, ret);
+		}//接收 消息---处理 发送   生产者 数据缓冲区  消费者 
+		break;
+		case CMD_LOGOUT:
+		{
+			Logout* logout = (Logout*)header;
+		}
+		break;
+		default:
+		{
+			printf("<socket=%d>收到未定义消息,数据长度：%d\n", pClient->_sock, header->dataLength);
+		}
+		break;
+		}
+	}
+private:
+
+};
 
 int main() {
-	TcpServer myserver;
+	MyServer myserver;
 	myserver.Initsocket();
 	myserver.Bind(nullptr, 4567);
 	myserver.Listen(5);

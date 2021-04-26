@@ -7,6 +7,10 @@ public:
 	char _szMsgBuf[RECV_BUFF_SZIE];
 	//消息缓冲区的数据尾部位置
 	int _lastPos;
+	//第二缓冲区 发送缓冲区
+	char _szSendBuf[SEND_BUFF_SZIE];
+	//发送缓冲区的数据尾部位置
+	int _lastSendPos;
 	SOCKET _sock;
 	ClientSocket(SOCKET sock) {
 		_sock = sock;
@@ -20,12 +24,87 @@ public:
 	{
 		_lastPos = pos;
 	}
+	//发送数据
+	int SendData(DataHeader* header)
+	{
+		int ret = SOCKET_ERROR;
+		//要发送的数据长度
+		int nSendLen = header->dataLength;
+		//要发送的数据
+		const char* pSendData = (const char*)header;
 
+		while (true)
+		{
+			if (_lastSendPos + nSendLen >= SEND_BUFF_SZIE)
+			{
+				//计算可拷贝的数据长度
+				int nCopyLen = SEND_BUFF_SZIE - _lastSendPos;
+				//拷贝数据
+				memcpy(_szSendBuf + _lastSendPos, pSendData, nCopyLen);
+				//计算剩余数据位置
+				pSendData += nCopyLen;
+				//计算剩余数据长度
+				nSendLen -= nSendLen;
+				//发送数据
+				ret = send(_sock, _szSendBuf, SEND_BUFF_SZIE, 0);
+				//数据尾部位置清零
+				_lastSendPos = 0;
+				//发送错误
+				if (SOCKET_ERROR == ret)
+				{
+					return ret;
+				}
+			}
+			else {
+				//将要发送的数据 拷贝到发送缓冲区尾部
+				memcpy(_szSendBuf + _lastSendPos, pSendData, nSendLen);
+				//计算数据尾部位置
+				_lastSendPos += nSendLen;
+				break;
+			}
+		}
+		return ret;
+	}
 private:
 
 
 };
+class CellServer;
+//网络事件接口
+class INetEvent
+{
+public:
+	//纯虚函数
+	//客户端加入事件
+	virtual void OnNetJoin(ClientSocket* pClient) = 0;
+	//客户端离开事件
+	virtual void OnNetLeave(ClientSocket* pClient) = 0;
+	//客户端消息事件
+	virtual void OnNetMsg(CellServer* pCellServer, ClientSocket* pClient, DataHeader* header) = 0;
+	//recv事件
+	virtual void OnNetRecv(ClientSocket* pClient) = 0;
+private:
 
+};
+//网络消息发送任务
+class CellSendMsg2ClientTask :public CellTask
+{
+	ClientSocket* _pClient;
+	DataHeader* _pHeader;
+public:
+	CellSendMsg2ClientTask(ClientSocket* pClient, DataHeader* header)
+	{
+		_pClient = pClient;
+		_pHeader = header;
+	}
+
+	//执行任务
+	void doTask()
+	{
+		_pClient->SendData(_pHeader);
+		delete _pHeader;
+	}
+};
 class CellServer
 {
 public:
@@ -35,6 +114,15 @@ public:
 	~CellServer() {
 
 	};
+	void setEventObj(INetEvent* event)
+	{
+		_pNetEvent = event;
+	}
+	void addSendTask(ClientSocket* pClient, DataHeader* header)
+	{
+		CellSendMsg2ClientTask* task = new CellSendMsg2ClientTask(pClient, header);
+		_taskServer.addTask(task);
+	}
 	int RecvData(ClientSocket* pClient) {
 
 		//接收客户端数据
@@ -46,8 +134,6 @@ public:
 			//printf("客户端<Socket=%d>已退出，任务结束。\n", pClient->sockfd());
 			return -1;
 		}
-		//将收取到的数据拷贝到消息缓冲区
-		//memcpy(pClient->msgBuf() + pClient->getLastPos(), _szRecv, nLen);
 		//消息缓冲区的数据尾部位置后移
 		pClient->setLastPos(pClient->_lastPos + nLen);
 
@@ -61,7 +147,7 @@ public:
 			{
 				//消息缓冲区剩余未处理数据的长度
 				int nSize = pClient->_lastPos - header->dataLength;
-
+				_pNetEvent->OnNetMsg(this, pClient, header);
 				//将消息缓冲区剩余未处理数据前移
 				memcpy(pClient->_szMsgBuf, pClient->_szMsgBuf + header->dataLength, nSize);
 				//消息缓冲区的数据尾部位置前移
@@ -223,6 +309,8 @@ public:
 	void ThreadStart()
 	{
 		_thread = std::thread(&CellServer::OnRun, this);
+		_thread.detach();
+		_taskServer.Start();
 
 	}
 private:
@@ -234,9 +322,12 @@ private:
 	SOCKET _sock;
 	SOCKET _maxSock;
 	fd_set _fdRead_bak;
+	CellTaskServer _taskServer;
+	//网络事件对象
+	INetEvent* _pNetEvent;
 };
 
-class TcpServer
+class TcpServer : public INetEvent
 {
 public:
 	TcpServer() {
@@ -306,13 +397,6 @@ public:
 		return ret;
 	}
 
-	virtual void OnNetJoin(ClientSocket* pClient)
-	{
-		_clientCount++;
-		//printf("client<%d> join\n", pClient->sockfd());
-	}
-
-
 	void addClientToCellServer(ClientSocket* pClient)
 	{
 		//查找客户数量最少的CellServer消息处理对象
@@ -354,6 +438,7 @@ public:
 		{
 			auto ser = new CellServer(_sock);
 			_cellServers.push_back(ser);
+			ser->setEventObj(this);
 			ser->ThreadStart();
 		}
 	}
@@ -377,6 +462,7 @@ public:
 	{
 		if (isRun())
 		{
+			time4msg();
 			//伯克利套接字 BSD socket
 			
 			//清理集合
@@ -409,9 +495,53 @@ public:
 	{
 		return _sock != INVALID_SOCKET;
 	}
+	//计算并输出每秒收到的网络消息
+	void time4msg()
+	{
+		auto t1 = _tTime.getElapsedSecond();
+		if (t1 >= 1.0)
+		{
+			printf("thread<%d>,time<%lf>,socket<%d>,clients<%d>,recv<%d>,msg<%d>\n", _cellServers.size(), t1, _sock, (int)_clientCount, (int)(_recvCount / t1), (int)(_msgCount / t1));
+			_recvCount = 0;
+			_msgCount = 0;
+			_tTime.update();
+		}
+	}
+
+	//只会被一个线程触发 安全
+	virtual void OnNetJoin(ClientSocket* pClient)
+	{
+		_clientCount++;
+		//printf("client<%d> join\n", pClient->sockfd());
+	}
+	//cellServer 4 多个线程触发 不安全
+	//如果只开启1个cellServer就是安全的
+	virtual void OnNetLeave(ClientSocket* pClient)
+	{
+		_clientCount--;
+		//printf("client<%d> leave\n", pClient->sockfd());
+	}
+	//cellServer 4 多个线程触发 不安全
+	//如果只开启1个cellServer就是安全的
+	virtual void OnNetMsg(CellServer* pCellServer, ClientSocket* pClient, DataHeader* header)
+	{
+		_msgCount++;
+	}
+
+	virtual void OnNetRecv(ClientSocket* pClient)
+	{
+		_recvCount++;
+		//printf("client<%d> leave\n", pClient->sockfd());
+	}
 private:
 	SOCKET _sock;
 	vector<CellServer*> _cellServers;
 	fd_set fdRead;
-	int _clientCount;
+	//SOCKET recv计数
+	std::atomic_int _recvCount;
+	//收到消息计数
+	std::atomic_int _msgCount;
+	//客户端计数
+	std::atomic_int _clientCount;
+	CELLTimestamp _tTime;
 };

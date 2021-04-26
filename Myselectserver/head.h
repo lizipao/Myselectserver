@@ -2,6 +2,7 @@
 #include<vector>
 #include<map>
 #include<mutex>
+#include<atomic>
 #include"CELLTimestamp.hpp"
 #include"Message.hpp"
 #include"CellTaskServer.hpp"
@@ -26,4 +27,4 @@ using namespace std;
 #ifndef RECV_BUFF_SZIE
 #define RECV_BUFF_SZIE 10240*5
 #define SEND_BUFF_SZIE RECV_BUFF_SZIE
-#endif // !RECV_BUFF_SZIE
+#endif // 
